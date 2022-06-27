@@ -11,7 +11,7 @@ class ImageList(object):
             tensors (tensor) padding后的图像数据
             image_sizes (list[tuple[int, int]])  padding前的图像尺寸
         """
-        self.tensor = tensors
+        self.tensors = tensors
         self.image_sizes = image_size
 
     def to(self, device):
