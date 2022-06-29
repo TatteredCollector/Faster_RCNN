@@ -137,7 +137,8 @@ class AnchorsGenerator(nn.Module):
             # 将anchors模板与原图上的坐标偏移量相加得到原图上所有anchors的坐标信息(shape不同时会使用广播机制)
             shifts_anchor = shifts.view(-1, 1, 4) + base_anchors.view(1, -1, 4)
             anchors.append(shifts_anchor.reshape(-1, 4))
-            return anchors  # List[Tensor(all_num_anchors, 4)]
+
+        return anchors  # List[Tensor(all_num_anchors, 4)]
 
     def cached_grid_anchors(self, grid_sizes, strides):
         # type: (List[List[int],List[List[Tensor]]])-> List[Tensor]
@@ -223,6 +224,68 @@ class RPNHead(nn.Module):
         return logits, bbox_reg
 
 
+def permute_and_flatten(layer, N, A, C, H, W):
+    # type:(Tensor,int,int,int,int,int)->Tensor
+    """
+        调整tensor顺序，并进行reshape
+        Args:
+            layer: 预测特征层上预测的目标概率或bboxes regression参数
+            N: batch_size
+            A: anchors_num_per_position
+            C: classes_num or 4(bbox coordinate)
+            H: height
+            W: width
+
+        Returns:
+            layer: 调整tensor顺序，并reshape后的结果[N, -1, C]
+        """
+    # view和reshape功能是一样的，先展平所有元素在按照给定shape排列
+    # view函数只能用于内存中连续存储的tensor，permute等操作会使tensor在内存中变得不再连续，此时就不能再调用view函数
+    # reshape则不需要依赖目标tensor是否在内存中是连续的
+    # [batch_size, anchors_num_per_position * (C or 4), height, width]
+    layer = layer.view(N, -1, C, H, W)
+    # 调换tensor维度
+    layer = layer.permute(0, 3, 4, 1, 2)  # [N, H, W, -1, C]
+    layer = layer.reshape(N, -1, C)
+    return layer
+
+
+def concat_box_prediction_layers(box_cls, box_regression):
+    # type:(List[Tensor],List[Tensor])-> Tuple[Tensor,Tensor]
+    """
+    对box_cla和box_regression两个list中的每个预测特征层的预测信息
+    的tensor排列顺序以及shape进行调整 -> [N, -1, C]
+    Args:
+        box_cls: 每个预测特征层上的预测目标概率
+        box_regression: 每个预测特征层上的预测目标bboxes regression参数
+
+    Returns:
+
+    """
+    box_cls_flattened = []
+    box_regression_flattened = []
+    for box_cls_per_level, box_regression_per_level in zip(box_cls, box_regression):
+        # [batch_size, anchors_num_per_position * classes_num, height, width]
+        # 注意，当计算RPN中的proposal时，classes_num=1,只区分目标和背景
+        N, AXC, H, W = box_cls_per_level.shape
+        # [batch_size, anchors_num_per_position * 4, height, width]
+        AX4 = box_regression_per_level.shape[1]
+        # anchors_num_per_position
+        A = AXC // 4
+        # classes_num
+        C = AXC // A
+
+        # [N, -1, C]
+        box_cls_per_level = permute_and_flatten(box_regression_per_level, N, A, C, H, W)
+        box_regression_per_level = permute_and_flatten(box_regression_per_level, N, A, C * 4, H, W)
+        box_cls_flattened.append(box_cls_per_level)
+        box_regression_flattened.append(box_regression_per_level)
+
+    box_cls = torch.cat(box_cls_flattened, dim=1).flatten(0, -2)
+    box_regression = torch.cat(box_regression_flattened, dim=1).reshape(-1, 4)
+    return box_cls, box_regression
+
+
 class RegionProposalNetwork(nn.Module):
     """
         Implements Region Proposal Network (RPN).
@@ -248,3 +311,171 @@ class RegionProposalNetwork(nn.Module):
             nms_thresh (float): NMS threshold used for postprocessing the RPN proposals
 
         """
+    __annotations__ = {
+        "box_coder": det_utils.BoxCoder,
+        "proposal_matcher": det_utils.Matcher,
+        "fg_bg_sampler": det_utils.BalancedPositiveNegativeSampler,
+        "pre_nms_top_n": Dict[str, int],
+        "post_nms_top_n": Dict[str, int],
+    }
+
+    def __init__(self, anchor_generator, head,
+                 fg_iou_thresh, bg_iou_thresh,
+                 batch_size_per_image, positive_fraction,
+                 pre_nms_top_n, post_nms_top_n, nms_thresh, score_thresh=0.0):
+        super(RegionProposalNetwork, self).__init__()
+        self.anchor_generator = anchor_generator
+        self.head = head
+        self.box_coder = det_utils.BoxCoder(weights=(1.0, 1.0, 1.0, 1.0))
+        # use during training
+        # 计算anchors与真实bbox的iou
+        self.box_similarity = box_ops.box_iou
+
+        self.proposal_matcher = det_utils.Matcher(
+            fg_iou_thresh,  # 当iou大于fg_iou_thresh(0.7)时视为正样本
+            bg_iou_thresh,  # 当iou小于bg_iou_thresh(0.3)时视为负样本
+            allow_low_quality_matches=True
+        )
+
+        self.fb_bg_smpler = det_utils.BalancedPositiveNegativeSampler(
+            batch_size_per_image, positive_fraction
+        )
+
+        # use during testing
+        self._per_nms_top_n = pre_nms_top_n
+        self._post_nms_top_n = post_nms_top_n
+        self.nms_thresh = nms_thresh
+        self.score_thresh = score_thresh
+        self.min_size = 1
+
+    def pre_nms_top_n(self):
+        if self.training:
+            return self._pre_nms_top_n["training"]
+        return self._pre_nms_top_n["testing"]
+
+    def _get_top_n_idx(self, objectness, num_anchors_per_level):
+        # type:(Tensor,List[int])->Tensor
+        """
+        获取每张预测特征图上预测概率排前pre_nms_top_n的anchors索引值
+        Args:
+            objectness: Tensor(每张图像的预测目标概率信息 )
+            num_anchors_per_level: List（每个预测特征层上的预测的anchors个数）
+        Returns:
+
+        """
+        r = []
+        offset = 0
+        # 遍历每个预测特征层上的预测目标概率信息
+        for ob in objectness.split(num_anchors_per_level, 1):
+            if torchvision._is_tracing():
+                num_anchors, pre_nms_top_n = _onnx_get_num_anchors_and_pre_nms_top_n(ob, self.pre_nms_top_n())
+            else:
+                num_anchors = ob.shape[1]  # 预测特征层上的预测的anchors个数
+                pre_nms_top_n = min(self.pre_nms_top_n(), num_anchors)
+
+            # Returns the k largest elements of the given input tensor along a given dimension
+            # input -> 输入tensor
+            # k -> 前k个
+            # dim -> 默认为输入tensor的最后一个维度
+            # sorted -> 是否排序
+            # largest -> False表示返回第k个最小值
+            _, top_n_idx = ob.topk(pre_nms_top_n, dim=1)
+            r.append(top_n_idx + offset)
+            offset += num_anchors
+        return torch.cat(r, dim=1)
+
+    def filter_proposals(self, proposals, objectness, image_shapes, num_anchors_per_level):
+        # type:(Tensor,Tensor,List[Tuple[int,int]],List[int])->Tuple[List[Tensor]]
+        """
+                筛除小boxes框，nms处理，根据预测概率获取前post_nms_top_n个目标
+                Args:
+                    proposals: 预测的bbox坐标
+                    objectness: 预测的目标概率
+                    image_shapes: batch中每张图片的size信息
+                    num_anchors_per_level: 每个预测特征层上预测anchors的数目
+
+                Returns:
+
+        """
+        num_images = proposals.shape[0]
+        device = proposals.device
+
+        # do not backprop throught objectness
+        objectness = objectness.detach()
+        objectness = objectness.reshape(num_images, -1)
+
+        # Returns a tensor of size size filled with fill_value
+        # levels负责记录分隔不同预测特征层上的anchors索引信息
+        levels = [torch.full((n,), idx, dtype=torch.int64, device=device)
+                  for idx, n in enumerate(num_anchors_per_level)
+                  ]
+        levels = torch.cat(levels, 0)
+
+        # Expand this tensor to the same size as objectness
+        levels = levels.reshape(1, -1).expand_as(objectness)
+
+        # select top_n boxes independently per level before applying nms
+        # 获取每张预测特征图上预测概率排前pre_nms_top_n的anchors索引值
+        top_n_idx = self._get_top_n_idx(objectness, num_anchors_per_level)
+
+    def forward(self,
+                images,  # type:ImageList
+                features,  # type : Dict[str,Tensor]
+                targets=None  # type: Optional[List[Dict[str,Tensor]]]
+                ):
+        # type:(...) -> Tuple[List[Tensor],Dict[str,Tensor]]
+        """
+        Arguments:
+            images (ImageList): images for which we want to compute the predictions
+            features (Dict[Tensor]): features computed from the images that are
+                used for computing the predictions. Each tensor in the list
+                correspond to different feature levels
+            targets (List[Dict[Tensor]): ground-truth boxes present in the image (optional).
+                If provided, each element in the dict should contain a field `boxes`,
+                with the locations of the ground-truth boxes.
+
+        Returns:
+            boxes (List[Tensor]): the predicted boxes from the RPN, one Tensor per
+                image.
+            losses (Dict[Tensor]): the losses for the model during training. During
+                testing, it is an empty dict.
+        """
+        # RPN uses all feature maps that are available
+        # features是所有预测特征层组成的OrderedDict
+        features = list(features.values())
+        # 计算每个预测特征层上的预测目标概率和bboxes regression参数
+        # objectness和pred_bbox_deltas都是list
+        objectness, pred_bbox_deltas = self.head(features)
+
+        # 生成一个batch图像的所有anchors信息,list(tensor)元素个数等于batch_size
+        anchors = self.anchor_generator(images, features)
+        # batch_size
+        num_images = len(anchors)
+        # numel() Returns the total number of elements in the input tensor.
+        # 计算每个预测特征层上的对应的anchors数量 o[0].shape
+        num_anchors_per_level_shape_tensors = [o[0].shape for o in objectness]
+        num_anchors_per_level = [s[0] * s[1] * s[2] for s in num_anchors_per_level_shape_tensors]
+
+        # 调整内部tensor格式以及shape
+        objectness, pred_bbox_deltas = concat_box_prediction_layers(objectness, pred_bbox_deltas)
+
+        # apply pred_bbox_deltas to anchors to obtain the decoded proposals
+        # note that we detach the deltas because Faster R-CNN do not backprop through
+        # the proposals
+        # 将预测的bbox regression参数应用到anchors上得到最终预测bbox坐标
+
+        # torch.tensor.detach()用法介绍：
+        # （1）返回一个新的从当前图中分离的Variable。
+        # （2）返回的 Variable 不会梯度更新。
+        # （3）被detach 的Variable volatile=True， detach出来的volatile也为True。
+        # （4）返回的Variable和被detach的Variable指向同一个tensor。
+        proposals = self.box_coder.decode(pred_bbox_deltas.detach, anchors)
+        proposals = proposals.view(num_images, -1, 4)
+
+        # 筛除小boxes框，nms处理，根据预测概率获取前post_nms_top_n个目标
+        boxes, scores = self.filter_proposals(proposals, objectness, images.image_sizes, num_anchors_per_level)
+
+        losses={}
+        if self.training:
+            assert  targets is not None
+            # 计算每个anchors最匹配的gt，并将anchors进行分类，前景，背景以及废弃的anchors
