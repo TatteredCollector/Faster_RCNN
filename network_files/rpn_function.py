@@ -353,6 +353,11 @@ class RegionProposalNetwork(nn.Module):
             return self._pre_nms_top_n["training"]
         return self._pre_nms_top_n["testing"]
 
+    def post_nms_top_n(self):
+        if self.training:
+            return self._post_nms_top_n["training"]
+        return self._post_nms_top_n["testing"]
+
     def _get_top_n_idx(self, objectness, num_anchors_per_level):
         # type:(Tensor,List[int])->Tensor
         """
@@ -418,6 +423,65 @@ class RegionProposalNetwork(nn.Module):
         # 获取每张预测特征图上预测概率排前pre_nms_top_n的anchors索引值
         top_n_idx = self._get_top_n_idx(objectness, num_anchors_per_level)
 
+        image_range = torch.arange(num_images, device=device)
+        batch_idx = image_range[:, None]  # [batch_size, 1]
+
+        # 根据每个预测特征层预测概率排前pre_nms_top_n的anchors索引值获取相应概率信息
+        objectness = objectness[batch_idx, top_n_idx]
+        levels = levels[batch_idx, top_n_idx]
+        # 预测概率排前pre_nms_top_n的anchors索引值获取相应bbox坐标信息
+        proposals = proposals[batch_idx, top_n_idx]
+
+        objectness_prob = torch.sigmoid(objectness)
+        final_boxes = []
+        final_scores = []
+        for boxes, scores, lvl, img_shape in zip(proposals, objectness_prob, levels, image_shapes):
+            # 调整预测的boxes信息，将越界的坐标调整到图片边界上
+            boxes = box_ops.clip_boxes_to_image(boxes, img_shape)
+
+            # 返回boxes满足宽，高都大于min_size的索引
+            keep = box_ops.remove_small_boxes(boxes, self.min_size)
+            boxes, scores, lvl = boxes[keep], scores[keep], lvl[keep]
+
+            # 移除小概率boxes，
+            keep = torch.where(torch.ge(scores, self.score_thresh))[0]
+            boxes, scores, lvl = boxes[keep], scores[keep], lvl[keep]
+
+            # 非极大值抑制
+            keep = box_ops.batched_nms(boxes, scores, lvl, self.nms_thresh)
+
+            keep = keep[:self.post_nms_top_n()]
+            boxes, scores = boxes[keep], scores[keep]
+
+            final_boxes.append(boxes)
+            final_scores.append(scores)
+        return final_boxes, final_scores
+
+    def assign_targets_to_anchors(self, anchors, targets):
+        # type: (List[Tensor],List[Dict[str,Tensor]])->Tuple[List[Tensor],List[Tensor]]
+        """
+        计算每个anchors最匹配的gt，并划分为正样本，背景以及废弃的样本
+        Args：
+            anchors: (List[Tensor])
+            targets: (List[Dict[Tensor])
+        Returns:
+            labels: 标记anchors归属类别（1, 0, -1分别对应正样本，背景，废弃的样本）
+                    注意，在RPN中只有前景和背景，所有正样本的类别都是1，0代表背景
+            matched_gt_boxes：与anchors匹配的gt
+        """
+        labels = []
+        matched_gt_boxes = []
+        # 遍历每张图像的anchors和targets
+        for anchors_per_image, targets_per_image in zip(anchors, targets):
+            gt_boxes = targets_per_image["boxes"]
+            # 检测是否没有元素
+            if gt_boxes.numel() == 0:
+                device = anchors_per_image.device()
+                matched_gt_boxes_per_image = torch.zeros(anchors_per_image.shape, dtype=torch.float32, device=device)
+                labels_per_image = torch.zeros((anchors_per_image.shape[0],), dtype=torch.float32, device=device)
+            else:
+        # 计算anchors与真实bbox的iou信息
+
     def forward(self,
                 images,  # type:ImageList
                 features,  # type : Dict[str,Tensor]
@@ -475,7 +539,8 @@ class RegionProposalNetwork(nn.Module):
         # 筛除小boxes框，nms处理，根据预测概率获取前post_nms_top_n个目标
         boxes, scores = self.filter_proposals(proposals, objectness, images.image_sizes, num_anchors_per_level)
 
-        losses={}
+        losses = {}
         if self.training:
-            assert  targets is not None
+            assert targets is not None
             # 计算每个anchors最匹配的gt，并将anchors进行分类，前景，背景以及废弃的anchors
+            labels, matched_gt_box = self.assign_target_to_anchors(anchors, targets)
