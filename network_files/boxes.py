@@ -117,3 +117,46 @@ def batched_nms(boxes, scores, idxs, iou_threshold):
     boxes_for_nms = boxes + offsets[:, None]
     keep = nms(boxes_for_nms, scores, iou_threshold)
     return keep
+
+
+def box_area(boxes):
+    """
+    Computes the area of a set of bounding boxes, which are specified by its
+    (x1, y1, x2, y2) coordinates.
+
+    Arguments:
+        boxes (Tensor[N, 4]): boxes for which the area will be computed. They
+            are expected to be in (x1, y1, x2, y2) format
+
+    Returns:
+        area (Tensor[N]): area for each box
+    """
+    return (boxes[:, 2] - boxes[:, 0]) * (boxes[:, 3] - boxes[:, 1])
+
+
+def box_iou(boxes1, boxes2):
+    """
+        Return intersection-over-union (Jaccard index) of boxes.
+
+        Both sets of boxes are expected to be in (x1, y1, x2, y2) format.
+
+        Arguments:
+            boxes1 (Tensor[N, 4])
+            boxes2 (Tensor[M, 4])
+
+        Returns:
+            iou (Tensor[N, M]): the NxM matrix containing the pairwise
+                IoU values for every element in boxes1 and boxes2
+    """
+    area1 = box_area(boxes1)
+    area2 = box_area(boxes2)
+    # 取左顶点的最大值
+    lt = torch.max(boxes1[:, None, :2], boxes2[:, :2])  # left-top [N,M,2]
+    # 取右顶点最小值
+    rb = torch.min(boxes1[:, None, 2:], boxes2[:, 2:])  # right-bottom [N,M,2]
+
+    wh = (rb - lt).clamp(min=0)  # [N,M,2]
+    inter = wh[:, :, 0] * wh[:, :, 1]  # [N,M]
+
+    iou = inter / (area1[:, None] + area2 - inter)
+    return iou
