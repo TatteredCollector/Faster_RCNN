@@ -49,7 +49,7 @@ def _resize_image(image, self_min_size, self_max_size):
     return image
 
 
-class GeneralizeRCNN(nn.Module):
+class GeneralizedRCNNTransform(nn.Module):
     """
     Performs input / target transformation before feeding the data to a GeneralizedRCNN
     model.
@@ -62,7 +62,7 @@ class GeneralizeRCNN(nn.Module):
     """
 
     def __init__(self, min_size, max_size, image_mean, image_std):
-        super(GeneralizeRCNN, self).__init__()
+        super(GeneralizedRCNNTransform, self).__init__()
         if not isinstance(min_size, (tuple, list)):
             min_size = (min_size,)
             self.min_size = min_size  # 指定图像的最小边长范围
