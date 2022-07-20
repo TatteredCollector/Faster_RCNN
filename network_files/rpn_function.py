@@ -16,7 +16,7 @@ class AnchorsGenerator(nn.Module):
     # 但这些注解同样也不会创建对应的变量。
     __annotations__ = {
         "cell_anchors": Optional[List[torch.Tensor]],
-        "_cache": Dict[str, list[torch.Tensor]]
+        "_cache": Dict[str, List[torch.Tensor]]
     }
     """
         anchors生成器
@@ -214,7 +214,7 @@ class RPNHead(nn.Module):
                                    kernel_size=1, stride=1, padding=0)
         for layer in self.children():
             if isinstance(layer, nn.Conv2d):
-                torch.nn.init.normal_(layer, std=0.01)
+                torch.nn.init.normal_(layer.weight, std=0.01)
                 torch.nn.init.constant_(layer.bias, 0)
 
     def forward(self, x):

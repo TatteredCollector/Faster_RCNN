@@ -284,7 +284,8 @@ class FasterRCNN(FasterRCNNBase):
         if rpn_anchor_generator is None:
             anchor_size = ((32,), (64,), (128,), (256,), (512,),)
             aspect_ratios = ((0.5, 1.0, 2.0),) * len(anchor_size)
-            rpn_anchor_generator = AnchorsGenerator(anchor_size, aspect_ratios)
+            rpn_anchor_generator = AnchorsGenerator(anchor_size,
+                                                    aspect_ratios)
 
         # 生成RPN通过滑动窗口预测网络部分
         if rpn_head is None:
