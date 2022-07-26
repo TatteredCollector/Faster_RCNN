@@ -76,7 +76,7 @@ class FasterRCNNBase(nn.Module):
         for img in images:
             val = img.shape[-2:]
             assert len(val) == 2
-            original_image_sizes.append(val[0], val[1])
+            original_image_sizes.append((val[0], val[1]))
 
             # 图像预处理
         images, targets = self.transform(images, targets)
@@ -85,7 +85,7 @@ class FasterRCNNBase(nn.Module):
         # 若只在一层特征层上预测，将feature放入有序字典中，并编号为‘0’#
         # 若在多层特征层上预测，传入的就是一个有序字典
         if isinstance(features, torch.Tensor):
-            features = OrderedDict(["0", features])
+            features = OrderedDict([("0", features)])
 
         # 将特征层以及标注target信息传入rpn中
         # proposals: List[Tensor], Tensor_shape: [num_proposals, 4],
@@ -93,10 +93,10 @@ class FasterRCNNBase(nn.Module):
         proposals, proposal_losses = self.rpn(images, features, targets)
 
         # 将rpn生成的数据以及标注target信息传入fast rcnn后半部分
-        detections, detector_losses = self.roi_heads(features, proposals, images.image_size, targets)
+        detections, detector_losses = self.roi_heads(features, proposals, images.image_sizes, targets)
 
         # 对网络的预测结果进行后处理（主要将bboxes还原到原图像尺度上）
-        detections = self.transform.postprocess(detections, images.image_size, original_image_sizes)
+        detections = self.transform.postprocess(detections, images.image_sizes, original_image_sizes)
 
         losses = {}
         losses.update(detector_losses)

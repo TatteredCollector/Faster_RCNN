@@ -30,9 +30,11 @@ class BoxCoder(object):
             proposals (Tensor): boxes to be encoded
         """
         dtype = reference_boxes.dtype
-        device = reference_boxes.device()
+        device = reference_boxes.device
         weights = torch.as_tensor(self.weights, dtype=dtype, device=device)
         targets = encode_boxes(reference_boxes, proposals, weights)
+
+        return targets
 
     def encode(self, reference_boxes, proposals):
         # type:(List[Tensor],List[Tensor])->List[Tensor]
@@ -55,8 +57,6 @@ class BoxCoder(object):
         # targets_dx, targets_dy, targets_dw, targets_dh
         targets = self.encode_single(reference_boxes, proposals)
         return targets.split(boxes_per_image, 0)
-
-        return
 
     def decode_single(self, rel_codes, boxes):
         """
@@ -314,7 +314,7 @@ class BalancedPositiveNegativeSampler(object):
             num_neg = min(negative.numel(), num_neg)
             # 随机选择指定数量的正负样本
             # torch.randperm(4),随机打乱输出0-3
-            perm1 = torch.randperm(positive.numel(), device=positive.device())[:num_pos]
+            perm1 = torch.randperm(positive.numel(), device=positive.device)[:num_pos]
             perm2 = torch.randperm(negative.numel(), device=negative.device)[:num_neg]
 
             pos_idx_per_image = positive[perm1]

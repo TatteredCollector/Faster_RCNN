@@ -185,11 +185,11 @@ class AnchorsGenerator(nn.Module):
                 anchors_in_image.append(anchors_per_feature_map)
             anchors.append(anchors_in_image)
             # 将每一张图像的所有预测特征层的anchors坐标信息拼接在一起
-            # anchors是个list，每个元素为一张图像的所有anchors信息
-            anchors = [torch.cat(anchors_per_image) for anchors_per_image in anchors]
-            # Clear the cache in case that memory leaks.
-            self._cache.clear()
-            return anchors
+        # anchors是个list，每个元素为一张图像的所有anchors信息
+        anchors = [torch.cat(anchors_per_image) for anchors_per_image in anchors]
+         # Clear the cache in case that memory leaks.
+        self._cache.clear()
+        return anchors
 
 
 class RPNHead(nn.Module):
@@ -275,12 +275,12 @@ def concat_box_prediction_layers(box_cls, box_regression):
         # [batch_size, anchors_num_per_position * 4, height, width]
         AX4 = box_regression_per_level.shape[1]
         # anchors_num_per_position
-        A = AXC // 4
+        A = AX4 // 4
         # classes_num
         C = AXC // A
 
         # [N, -1, C]
-        box_cls_per_level = permute_and_flatten(box_regression_per_level, N, A, C, H, W)
+        box_cls_per_level = permute_and_flatten(box_cls_per_level, N, A, C, H, W)
         box_regression_per_level = permute_and_flatten(box_regression_per_level, N, A, C * 4, H, W)
         box_cls_flattened.append(box_cls_per_level)
         box_regression_flattened.append(box_regression_per_level)
@@ -346,7 +346,7 @@ class RegionProposalNetwork(nn.Module):
         )
 
         # use during testing
-        self._per_nms_top_n = pre_nms_top_n
+        self._pre_nms_top_n = pre_nms_top_n
         self._post_nms_top_n = post_nms_top_n
         self.nms_thresh = nms_thresh
         self.score_thresh = score_thresh
@@ -605,7 +605,7 @@ class RegionProposalNetwork(nn.Module):
         # （2）返回的 Variable 不会梯度更新。
         # （3）被detach 的Variable volatile=True， detach出来的volatile也为True。
         # （4）返回的Variable和被detach的Variable指向同一个tensor。
-        proposals = self.box_coder.decode(pred_bbox_deltas.detach, anchors)
+        proposals = self.box_coder.decode(pred_bbox_deltas.detach(), anchors)
         proposals = proposals.view(num_images, -1, 4)
 
         # 筛除小boxes框，nms处理，根据预测概率获取前post_nms_top_n个目标

@@ -358,7 +358,7 @@ class RoIHeads(torch.nn.Module):
         losses = {}
 
         if self.training:
-            assert labels is not None and regression_targets is None
+            assert labels is not None and regression_targets is not None
             loss_classifier, loss_box_reg = fastrcnn_loss(
                 class_logits, box_regression, labels, regression_targets
             )

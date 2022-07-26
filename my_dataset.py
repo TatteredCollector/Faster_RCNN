@@ -44,7 +44,7 @@ class VOCDataSet(Dataset):
     def __getitem__(self, idx):
         # 读取xml文件内容
         xml_path = self.xml_list[idx]
-        print(xml_path)
+        # print(xml_path)
         with open(xml_path, "r") as f:
             xml_str = f.read()
         # 法是将xml格式转化为Element 对象，Element 对象代表 XML 文档中的一个元素。

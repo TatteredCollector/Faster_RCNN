@@ -241,9 +241,10 @@ class GeneralizedRCNNTransform(nn.Module):
         image_size_list = torch.jit.annotate(the_type=List[Tuple[int, int]], the_value=[])
 
         for image_size in image_sizes:
-            assert len(image_size == 2), "image_size error "
+            assert len(image_size) == 2, "image size error"
+            # 断言 执行逻辑，如果不满足条件，抛出异常中断程序
             image_size_list.append((image_size[0], image_size[1]))
-        image_list = ImageList[images, image_size_list]
+        image_list = ImageList(images, image_size_list)
         return image_list, targets
 
 
