@@ -43,6 +43,7 @@ class VOCDataSet(Dataset):
 
     def __getitem__(self, idx):
         # 读取xml文件内容
+        # print("*"*20)
         xml_path = self.xml_list[idx]
         # print(xml_path)
         with open(xml_path, "r") as f:
@@ -52,7 +53,7 @@ class VOCDataSet(Dataset):
         xml = etree.fromstring(xml_str)
         data = self.parse_xml_to_dict(xml)['annotation']
         img_path = os.path.join(self.img_root, data["filename"])
-        assert os.path.exists(img_path),"{} do not exist".format(img_path)
+        assert os.path.exists(img_path), "{} do not exist".format(img_path)
         image = Image.open(img_path)
         if image.format != "JPEG":
             raise ValueError("image {} format not JPEG".format(img_path))
@@ -181,7 +182,6 @@ class VOCDataSet(Dataset):
     def collate_fn(batch):
         # 生成元组对（图像，目标）
         return tuple(zip(*batch))
-
 
 # import transforms
 # from draw_box_utils import draw_box
