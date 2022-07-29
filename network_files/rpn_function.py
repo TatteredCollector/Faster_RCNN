@@ -588,7 +588,7 @@ class RegionProposalNetwork(nn.Module):
         # batch_size
         num_images = len(anchors)
         # numel() Returns the total number of elements in the input tensor.
-        # 计算每个预测特征层上的对应的anchors数量 o[0].shape
+        # 计算每个预测特征层上的对应的anchors数量  o[0].shape输出o的从第二个维度开始输出
         num_anchors_per_level_shape_tensors = [o[0].shape for o in objectness]
         num_anchors_per_level = [s[0] * s[1] * s[2] for s in num_anchors_per_level_shape_tensors]
 
